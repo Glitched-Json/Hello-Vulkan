@@ -35,7 +35,7 @@ public final class Window {
         if ((id = glfwCreateWindow(width, height, "Title", 0, 0)) == 0)
             throw new RuntimeException("Failed to initialize the GLFW Window.");
         glfwSetWindowPos(id, (mode.width() - width) / 2, (mode.height() - height) / 2);
-        setTitle(title);
+        setTitle(DataManager.getSettingString("game name"));
 
         glfwSetKeyCallback(id, (id, key, scancode, action, mods) -> {
             if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE)
@@ -62,8 +62,7 @@ public final class Window {
         lockCursor(DataManager.getFlag("first_person_mode"));
         glfwShowWindow(id);
 
-        if (DataManager.getFlag("show_initialization_messages"))
-            System.out.println("Window Initialized");
+        DataManager.initializeMessage("Window");
     }
 
     public static void lockCursor(boolean lock) {glfwSetInputMode(id, GLFW_CURSOR, lock ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);}
@@ -107,6 +106,8 @@ public final class Window {
 
         glfwFreeCallbacks(id);
         glfwDestroyWindow(id);
+
+        DataManager.cleanupMessage("Window");
     }
     //*/
 }

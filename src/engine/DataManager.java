@@ -9,6 +9,8 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static org.lwjgl.vulkan.VK10.VK_MAKE_VERSION;
+
 @SuppressWarnings("unused")
 public final class DataManager {
     private static final Map<String, Float> settings = new HashMap<>();
@@ -107,8 +109,32 @@ public final class DataManager {
         return false;
     }
 
-    public static List<String> getStringSetting(String var) {
+    public static List<String> getSettingList(String var) {
         if (stringSettings.containsKey(var)) return new ArrayList<>(stringSettings.get(var));
         return new ArrayList<>();
+    }
+
+    public static String getSettingString(String var) {
+        if (stringSettings.containsKey(var)) return stringSettings.get(var).getFirst();
+        return "";
+    }
+
+    public static void initializeMessage(String message) {
+        if (getFlag("show_initialization_messages"))
+            System.out.println("[INITIALIZED]: " + message);
+    }
+
+    public static void cleanupMessage(String message) {
+        if (getFlag("show_cleanup_messages"))
+            System.out.println("[CLEANUP]: " + message);
+    }
+
+    public static int getVulkanVersion(String setting) {
+        List<String> numbers = getSettingList(setting);
+        int[] n = new int[]{0, 0, 0};
+        for (int i=0; i<3 && i<numbers.size(); i++) try {
+            n[i] = (int) Double.parseDouble(numbers.get(i));
+        } catch (NumberFormatException e) { n[i] = 0; }
+        return VK_MAKE_VERSION(n[0], n[1], n[2]);
     }
 }

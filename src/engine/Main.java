@@ -9,8 +9,8 @@ import java.util.Objects;
 import static org.lwjgl.glfw.GLFW.*;
 
 public final class Main {
-    @Getter
-    private static boolean running = true;
+    @Getter private static boolean running = true;
+    private static final DecimalFormat format = new DecimalFormat(",###");
 
     public static void main() {
         initialize();
@@ -34,7 +34,6 @@ public final class Main {
     }
 
     private static void run() {
-        DecimalFormat format = new DecimalFormat(",###");
         double targetFPS = 1d / Math.max(1e-9, DataManager.getSetting("fps")); // frames per second
         double targetTPS = 1d / DataManager.getSetting("tps");                 // ticks  per second
         double targetSRR = 1d / DataManager.getSetting("spatial_fps");         // spatial refresh rate
@@ -53,7 +52,7 @@ public final class Main {
             start = System.nanoTime();
             passedTime = start - end;
             end = start;
-            elapsedTime = passedTime / (double) 1_000_000_000L;
+            elapsedTime = passedTime / 1e9d;
             timeRender += elapsedTime;
             timeStatic += elapsedTime;
             timeSpatial += elapsedTime;
@@ -106,18 +105,40 @@ public final class Main {
     }
 
     private static void initialize() {
+        long start = System.nanoTime();
+
         GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) throw new IllegalStateException("Failed to initialize GLFW.");
+        DataManager.initializeMessage("GLFW");
 
         Window.initialize();
+        VulkanManager.initialize();
+
+        long end = System.nanoTime();
+        if (DataManager.getFlag("show_initialization_metrics"))
+            System.out.printf("[INITIALIZATION METRICS]: %sms | %sns\n",
+                    format.format((end - start) / 1e9d).replaceAll(",", "."),
+                    format.format(end - start).replaceAll(",", ".")
+            );
     }
 
     private static void cleanup() {
         running = false;
+        long start = System.nanoTime();
 
         Window.cleanup();
+        VulkanManager.cleanup();
 
         glfwTerminate();
         Objects.requireNonNull(glfwSetErrorCallback(null)).free();
+        DataManager.cleanupMessage("GLFW");
+
+
+        long end = System.nanoTime();
+        if (DataManager.getFlag("show_cleanup_metrics"))
+            System.out.printf("[CLEANUP METRICS]: %sms | %sns\n",
+                    format.format((end - start) / 1e9d).replaceAll(",", "."),
+                    format.format(end - start).replaceAll(",", ".")
+            );
     }
 }
