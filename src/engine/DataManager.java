@@ -109,6 +109,10 @@ public final class DataManager {
         return false;
     }
 
+    public static boolean getInfoFlag(String var) {
+        return getFlag("show_everything") || getFlag(var);
+    }
+
     public static List<String> getSettingList(String var) {
         if (stringSettings.containsKey(var)) return new ArrayList<>(stringSettings.get(var));
         return new ArrayList<>();
@@ -120,13 +124,18 @@ public final class DataManager {
     }
 
     public static void initializeMessage(String message) {
-        if (getFlag("show_initialization_messages"))
+        if (getInfoFlag("show_initialization_messages"))
             System.out.println("[INITIALIZED]: " + message);
     }
 
     public static void cleanupMessage(String message) {
-        if (getFlag("show_cleanup_messages"))
+        if (getInfoFlag("show_cleanup_messages"))
             System.out.println("[CLEANUP]: " + message);
+    }
+
+    public static void infoMessage(String setting, String message) {
+        if (getInfoFlag(setting))
+            System.out.println("[INFO]: " + message);
     }
 
     public static int getVulkanVersion(String setting) {

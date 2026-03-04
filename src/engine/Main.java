@@ -105,6 +105,8 @@ public final class Main {
     }
 
     private static void initialize() {
+        DataManager.infoMessage("show_info_os_arch", System.getProperty("os.arch"));
+
         long start = System.nanoTime();
 
         GLFWErrorCallback.createPrint(System.err).set();
@@ -115,8 +117,8 @@ public final class Main {
         VulkanManager.initialize();
 
         long end = System.nanoTime();
-        if (DataManager.getFlag("show_initialization_metrics"))
-            System.out.printf("[INITIALIZATION METRICS]: %sms | %sns\n",
+        if (DataManager.getInfoFlag("show_initialization_metrics"))
+            System.out.printf("[INITIALIZATION COMPLETE]: %sms | %sns\n",
                     format.format((end - start) / 1e9d).replaceAll(",", "."),
                     format.format(end - start).replaceAll(",", ".")
             );
@@ -133,10 +135,9 @@ public final class Main {
         Objects.requireNonNull(glfwSetErrorCallback(null)).free();
         DataManager.cleanupMessage("GLFW");
 
-
         long end = System.nanoTime();
-        if (DataManager.getFlag("show_cleanup_metrics"))
-            System.out.printf("[CLEANUP METRICS]: %sms | %sns\n",
+        if (DataManager.getInfoFlag("show_cleanup_metrics"))
+            System.out.printf("[CLEANUP COMPLETE]: %sms | %sns\n",
                     format.format((end - start) / 1e9d).replaceAll(",", "."),
                     format.format(end - start).replaceAll(",", ".")
             );
