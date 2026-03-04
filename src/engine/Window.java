@@ -11,7 +11,7 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class Window {
     private static boolean initialized = false;
     @Getter private static boolean vSync = true;
-    private static long id;
+    @Getter private static long id;
     @Getter private static int width = 1280, height = 720;
     @Getter private static String title = "Window";
 
@@ -25,6 +25,7 @@ public final class Window {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         if (DataManager.getFlag("anti_aliasing_samples")) glfwWindowHint(GLFW_SAMPLES, (int) DataManager.getSetting("anti_aliasing_samples"));
         //noinspection AssignmentUsedAsCondition
         glfwWindowHint(GLFW_DOUBLEBUFFER, (vSync = DataManager.getFlag("vSync")) ? GLFW_TRUE : GLFW_FALSE);
@@ -57,8 +58,6 @@ public final class Window {
         glfwSetCursorPosCallback(id, (_, xPosition, yPosition) ->
                 InputManager.registerCursorPosition(new Vector2d(xPosition, yPosition)));
 
-        glfwMakeContextCurrent(id);
-        if (vSync) glfwSwapInterval(DataManager.getFlag("uncapped_FPS") ? 0 : 1);
         lockCursor(DataManager.getFlag("first_person_mode"));
         glfwShowWindow(id);
 

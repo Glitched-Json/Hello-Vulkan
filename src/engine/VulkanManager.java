@@ -1,16 +1,15 @@
 package engine;
 
 import org.lwjgl.PointerBuffer;
+import org.lwjgl.glfw.GLFWVulkan;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
+import java.nio.LongBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.IntStream;
 
 import static org.lwjgl.glfw.GLFWVulkan.glfwGetRequiredInstanceExtensions;
@@ -23,6 +22,9 @@ public final class VulkanManager {
     private static VkPhysicalDevice physicalDevice;
     private static VkDevice logicalDevice;
     private static VkQueue graphicsQueue;
+    private static VkQueue presentQueue;
+    private static QueueFamilyIndices queueFamilyIndices;
+    private static long surfaceID;
 
     private static VkLayerProperties.Buffer layerProperties;
     private static VkExtensionProperties.Buffer extensionProperties;
@@ -34,6 +36,7 @@ public final class VulkanManager {
         initialized = true;
 
         createInstance();
+        createSurface();
         pickPhysicalDevice();
         createLogicalDevice();
 
@@ -78,7 +81,7 @@ public final class VulkanManager {
 
             // Application Info ----------------------------------------------------------------------------------------
             VkApplicationInfo applicationInfo = VkApplicationInfo
-                    .create()
+                    .calloc(stack)
                     .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
                     .pApplicationName(getSetting("game name"))
                     .applicationVersion(DataManager.getVulkanVersion("game version"))
@@ -88,7 +91,7 @@ public final class VulkanManager {
 
             // Instance Create Info ------------------------------------------------------------------------------------
             VkInstanceCreateInfo instanceCreateInfo = VkInstanceCreateInfo
-                    .create()
+                    .calloc(stack)
                     .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
                     .pApplicationInfo(applicationInfo);
 
@@ -121,6 +124,16 @@ public final class VulkanManager {
                 throw new RuntimeException("Failed to create Vulkan Instance: " + statusCode);
 
             instance = new VkInstance(handle.get(0), instanceCreateInfo);
+        }
+    }
+
+    private static void createSurface() {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            LongBuffer surfaceHandle = stack.mallocLong(1);
+            long statusCode = GLFWVulkan.glfwCreateWindowSurface(instance, Window.getId(), null, surfaceHandle);
+            if (statusCode != VK_SUCCESS)
+                throw new IllegalStateException("Failed to create Window Surface.");
+            surfaceID = surfaceHandle.get(0);
         }
     }
 
@@ -200,24 +213,26 @@ public final class VulkanManager {
 
     private static void createLogicalDevice() {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            int graphicsFamilyIndex = getGraphicsIndex(physicalDevice).orElseThrow(() ->
-                    new IllegalStateException("No Graphics Family supporting QUEUE_GRAPHICS was found."));
+            if (!queueFamilyIndices.isComplete())
+                throw new IllegalStateException("No Device supporting QUEUE_GRAPHICS and SURFACE_SUPPORT was found.");
 
             // Queue Create Info
-            VkDeviceQueueCreateInfo.Buffer queueCreateInfo = VkDeviceQueueCreateInfo
-                    .calloc(1, stack)
-                    .sType(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
-                    .queueFamilyIndex(graphicsFamilyIndex)
-                    .pQueuePriorities(stack.floats(1));
+            Integer[] indices = queueFamilyIndices.getUniqueIndicesArray();
+            VkDeviceQueueCreateInfo.Buffer queueCreateInfos = VkDeviceQueueCreateInfo.calloc(indices.length, stack);
+            for (int i=0; i<indices.length; i++)
+                queueCreateInfos.get(i)
+                        .sType(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
+                        .queueFamilyIndex(indices[i])
+                        .pQueuePriorities(stack.floats(1f));
 
             // Physical Device Features
             VkPhysicalDeviceFeatures features = getPhysicalDeviceFeatures(physicalDevice, stack);
 
             // Logical Device Create Info
             VkDeviceCreateInfo logicalDeviceCreateInfo = VkDeviceCreateInfo
-                    .create()
+                    .calloc(stack)
                     .sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO)
-                    .pQueueCreateInfos(queueCreateInfo)
+                    .pQueueCreateInfos(queueCreateInfos)
                     .pEnabledFeatures(features);
 
             if (DataManager.getFlag("enable_validation_layers"))
@@ -231,21 +246,38 @@ public final class VulkanManager {
             logicalDevice = new VkDevice(handle.get(0), physicalDevice, logicalDeviceCreateInfo);
 
             // Graphics Queue
-            PointerBuffer queueHandle = stack.mallocPointer(1);
-            vkGetDeviceQueue(logicalDevice, graphicsFamilyIndex, 0, queueHandle);
-            graphicsQueue = new VkQueue(queueHandle.get(0), logicalDevice);
+            PointerBuffer graphicsHandle = stack.mallocPointer(1);
+            vkGetDeviceQueue(logicalDevice, queueFamilyIndices.graphicsFamily, 0, graphicsHandle);
+            graphicsQueue = new VkQueue(graphicsHandle.get(0), logicalDevice);
+
+            // Present Queue
+            PointerBuffer presentHandle = stack.mallocPointer(1);
+            vkGetDeviceQueue(logicalDevice, queueFamilyIndices.presentFamily, 0, presentHandle);
+            presentQueue = new VkQueue(presentHandle.get(0), logicalDevice);
         }
     }
 
     private static boolean isDeviceSuitable(VkPhysicalDevice device) {
-        return getGraphicsIndex(device).isPresent();
+        return (queueFamilyIndices = getQueueFamilyIndices(device)).isComplete();
     }
 
-    private static Optional<Integer> getGraphicsIndex(VkPhysicalDevice device) {
-        for (int i = 0; i < getPhysicalDeviceQueueFamilySize(device); i++)
+    private static QueueFamilyIndices getQueueFamilyIndices(VkPhysicalDevice device) {
+        QueueFamilyIndices indices = new QueueFamilyIndices();
+        for (int i = 0; i < getPhysicalDeviceQueueFamilySize(device); i++) {
+            int surfaceSupport;
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                IntBuffer handle = stack.mallocInt(1);
+                KHRSurface.vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surfaceID, handle);
+                surfaceSupport = handle.get(0);
+            }
+            if (surfaceSupport == VK_TRUE) indices.presentFamily = i;
+
             if ((getPhysicalDeviceQueueFamilyProperties(device).get(i).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0)
-                return Optional.of(i);
-        return Optional.empty();
+                indices.graphicsFamily = i;
+
+            if (indices.isComplete()) return indices;
+        }
+        return indices;
     }
 
     private static boolean checkValidationLayerSupport() {
@@ -279,8 +311,22 @@ public final class VulkanManager {
         initialized = false;
 
         vkDestroyDevice(logicalDevice, null);
+        KHRSurface.vkDestroySurfaceKHR(instance, surfaceID, null);
         vkDestroyInstance(instance, null);
 
         DataManager.cleanupMessage("Vulkan Instance");
+    }
+
+    private static class QueueFamilyIndices {
+        private Integer graphicsFamily = null;
+        private Integer presentFamily = null;
+
+        public boolean isComplete() { return graphicsFamily != null && presentFamily != null; }
+        public Integer[] getUniqueIndicesArray() {
+            return Arrays.stream(new Integer[]{graphicsFamily, presentFamily})
+                    .distinct()
+                    .filter(Objects::nonNull)
+                    .toArray(Integer[]::new);
+        }
     }
 }
