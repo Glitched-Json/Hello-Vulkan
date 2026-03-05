@@ -9,10 +9,16 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 import java.util.stream.IntStream;
 
+import static org.lwjgl.glfw.GLFW.glfwGetFramebufferSize;
 import static org.lwjgl.glfw.GLFWVulkan.glfwGetRequiredInstanceExtensions;
+import static org.lwjgl.vulkan.KHRSurface.*;
+import static org.lwjgl.vulkan.KHRSwapchain.*;
 import static org.lwjgl.vulkan.VK10.*;
 
 public final class VulkanManager {
@@ -25,11 +31,16 @@ public final class VulkanManager {
     private static VkQueue presentQueue;
     private static QueueFamilyIndices queueFamilyIndices;
     private static long surfaceID;
+    private static long swapchainID;
+    private static VkExtent2D swapChainExtent;
+    private static int swapChainFormat;
 
     private static VkLayerProperties.Buffer layerProperties;
     private static VkExtensionProperties.Buffer extensionProperties;
+    private static final List<Long> swapChainImages = new ArrayList<>();
+    private static final List<Long> swapChainImageViews = new ArrayList<>();
 
-    private static String extensionInfo, layerInfo, deviceInfo;
+    private static String extensionInfo, layerInfo, deviceInfo, propertiesInfo = "";
 
     public static void initialize() {
         if (initialized) return;
@@ -39,18 +50,21 @@ public final class VulkanManager {
         createSurface();
         pickPhysicalDevice();
         createLogicalDevice();
+        createSwapChain();
+        createImageViews();
 
         DataManager.initializeMessage("Vulkan Instance");
 
         if (DataManager.getInfoFlag("show_instance_extensions")) System.out.println(extensionInfo);
         if (DataManager.getInfoFlag("show_instance_layers")) System.out.println(layerInfo);
         if (DataManager.getInfoFlag("show_devices")) System.out.println(deviceInfo);
+        if (DataManager.getInfoFlag("show_device_properties")) System.out.print(propertiesInfo);
     }
 
     private static void createInstance() {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // Layer Properties ----------------------------------------------------------------------------------------
-            IntBuffer layerCount = stack.mallocInt(1);
+            IntBuffer layerCount = stack.callocInt(1);
             vkEnumerateInstanceLayerProperties(layerCount, null);
 
             layerProperties = VkLayerProperties.malloc(layerCount.get(0), stack);
@@ -65,7 +79,7 @@ public final class VulkanManager {
                     .formatted(String.join("\n\t", layerProperties.stream().map(VkLayerProperties::layerNameString).toArray(String[]::new)));
 
             // Extension Properties ------------------------------------------------------------------------------------
-            IntBuffer extensionsCount = stack.mallocInt(1);
+            IntBuffer extensionsCount = stack.callocInt(1);
             vkEnumerateInstanceExtensionProperties((ByteBuffer) null, extensionsCount, null);
 
             extensionProperties = VkExtensionProperties.malloc(extensionsCount.get(0), stack);
@@ -139,7 +153,7 @@ public final class VulkanManager {
 
     private static void pickPhysicalDevice() {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer deviceNumber = stack.mallocInt(1);
+            IntBuffer deviceNumber = stack.callocInt(1);
             vkEnumeratePhysicalDevices(instance, deviceNumber, null);
             if (deviceNumber.get(0) == 0)
                 throw new IllegalStateException("Failed to find any GPUs with Vulkan Support.");
@@ -152,13 +166,15 @@ public final class VulkanManager {
                     .mapToObj(i -> new VkPhysicalDevice(devicePointers.get(i), instance))
                     .toArray(VkPhysicalDevice[]::new);
 
-            deviceInfo = "[INFO]: -- DEVICES -- \n\t%s".formatted(
-                    String.join("\n\t", Arrays.stream(devices)
-                            .map(d -> getPhysicalDeviceProperties(d, stack).deviceNameString())
-                            .toArray(String[]::new)));
+            String[] deviceNames = Arrays.stream(devices)
+                    .map(d -> getPhysicalDeviceProperties(d, stack).deviceNameString())
+                    .toArray(String[]::new);
+
+            deviceInfo = "[INFO]: -- DEVICES -- \n\t%s".formatted(String.join("\n\t", deviceNames));
 
             physicalDevice = null;
-            for (VkPhysicalDevice d: devices) if (isDeviceSuitable(d)) {
+            int i = 0;
+            for (VkPhysicalDevice d: devices) if (isDeviceSuitable(d, deviceNames[i++])) {
                 physicalDevice = d;
                 break;
             }
@@ -194,19 +210,14 @@ public final class VulkanManager {
         return size;
     }
     private static int getPhysicalDeviceQueueFamilySize(VkPhysicalDevice device, MemoryStack stack) {
-        IntBuffer queueIndex = stack.mallocInt(1);
+        IntBuffer queueIndex = stack.callocInt(1);
         vkGetPhysicalDeviceQueueFamilyProperties(device, queueIndex, null);
         return queueIndex.get(0);
     }
 
-    private static VkQueueFamilyProperties.Buffer getPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice device) {
-        VkQueueFamilyProperties.Buffer properties;
-        try (MemoryStack stack = MemoryStack.stackPush()) { properties = getPhysicalDeviceQueueFamilyProperties(device, stack); }
-        return properties;
-    }
     private static VkQueueFamilyProperties.Buffer getPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice device, MemoryStack stack) {
-        IntBuffer queueIndex = stack.mallocInt(1);
-        VkQueueFamilyProperties.Buffer familyProperties = VkQueueFamilyProperties.malloc(getPhysicalDeviceQueueFamilySize(device, stack), stack);
+        IntBuffer queueIndex = stack.callocInt(1);
+        VkQueueFamilyProperties.Buffer familyProperties = VkQueueFamilyProperties.calloc(getPhysicalDeviceQueueFamilySize(device, stack), stack);
         vkGetPhysicalDeviceQueueFamilyProperties(device, queueIndex, familyProperties);
         return familyProperties;
     }
@@ -229,11 +240,17 @@ public final class VulkanManager {
             VkPhysicalDeviceFeatures features = getPhysicalDeviceFeatures(physicalDevice, stack);
 
             // Logical Device Create Info
+            List<String> enabledExtensions = DataManager.getSettingList("device properties");
+            PointerBuffer extensionNames = stack.mallocPointer(enabledExtensions.size());
+            for (String extension: enabledExtensions) extensionNames.put(stack.UTF8(extension));
+            extensionNames.flip();
+
             VkDeviceCreateInfo logicalDeviceCreateInfo = VkDeviceCreateInfo
                     .calloc(stack)
                     .sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO)
                     .pQueueCreateInfos(queueCreateInfos)
-                    .pEnabledFeatures(features);
+                    .pEnabledFeatures(features)
+                    .ppEnabledExtensionNames(extensionNames);
 
             if (DataManager.getFlag("enable_validation_layers"))
                 logicalDeviceCreateInfo.ppEnabledLayerNames(stack.pointers(stack.UTF8("VK_LAYER_KHRONOS_validation")));
@@ -257,27 +274,171 @@ public final class VulkanManager {
         }
     }
 
-    private static boolean isDeviceSuitable(VkPhysicalDevice device) {
-        return (queueFamilyIndices = getQueueFamilyIndices(device)).isComplete();
+    private static boolean isDeviceSuitable(VkPhysicalDevice device, String deviceName) {
+        boolean extensionsSupported;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer extensionCount = stack.callocInt(1);
+            vkEnumerateDeviceExtensionProperties(device, (ByteBuffer) null, extensionCount, null);
+
+            VkExtensionProperties.Buffer data = VkExtensionProperties.calloc(extensionCount.get(0), stack);
+            vkEnumerateDeviceExtensionProperties(device, (ByteBuffer) null, extensionCount, data);
+
+            List<String> requiredExtensions = DataManager.getSettingList("device properties");
+            List<String> supportedExtensions = data.stream().map(VkExtensionProperties::extensionNameString).toList();
+
+            requiredExtensions.removeAll(supportedExtensions);
+
+            extensionsSupported = requiredExtensions.isEmpty();
+
+            propertiesInfo += "[INFO]: -- DEVICE PROPERTIES -- %s \n\t%s\n".formatted(
+                    deviceName,
+                    String.join("\n\t", supportedExtensions)
+            );
+        }
+
+        return extensionsSupported
+                && (queueFamilyIndices = getQueueFamilyIndices(device)).isComplete()
+                && getSwapChainSupportDetails(device).isComplete();
     }
 
     private static QueueFamilyIndices getQueueFamilyIndices(VkPhysicalDevice device) {
         QueueFamilyIndices indices = new QueueFamilyIndices();
-        for (int i = 0; i < getPhysicalDeviceQueueFamilySize(device); i++) {
-            int surfaceSupport;
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                IntBuffer handle = stack.mallocInt(1);
-                KHRSurface.vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surfaceID, handle);
-                surfaceSupport = handle.get(0);
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer sizeHandle = stack.callocInt(1);
+            vkGetPhysicalDeviceQueueFamilyProperties(device, sizeHandle, null);
+
+            VkQueueFamilyProperties.Buffer familyProperties = VkQueueFamilyProperties.calloc(sizeHandle.get(0), stack);
+            vkGetPhysicalDeviceQueueFamilyProperties(device, sizeHandle, familyProperties);
+
+            IntBuffer surfaceHandle = stack.callocInt(1);
+
+            for (int i = 0; i < sizeHandle.get(0); i++) {
+                KHRSurface.vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surfaceID, surfaceHandle);
+                if (surfaceHandle.get(0) == VK_TRUE) indices.presentFamily = i;
+
+                if ((familyProperties.get(i).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0)
+                    indices.graphicsFamily = i;
+
+                if (indices.isComplete()) break;
             }
-            if (surfaceSupport == VK_TRUE) indices.presentFamily = i;
-
-            if ((getPhysicalDeviceQueueFamilyProperties(device).get(i).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0)
-                indices.graphicsFamily = i;
-
-            if (indices.isComplete()) return indices;
         }
         return indices;
+    }
+
+    private static void createSwapChain() {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            // Create Info Arguments
+            SwapChainSupportDetails details = getSwapChainSupportDetails(physicalDevice);
+            VkSurfaceFormatKHR surfaceFormat = details.chooseSwapChainSurfaceFormat();
+
+            int imageCount = details.capabilities.minImageCount() + (int) Math.max(DataManager.getSetting("additional_swap_chain_images"), 0);
+            if (details.capabilities.maxImageCount() != 0)
+                imageCount = Math.min(imageCount, details.capabilities.maxImageCount());
+
+            QueueFamilyIndices indices = getQueueFamilyIndices(physicalDevice);
+            boolean isExclusive = indices.graphicsFamily.equals(indices.presentFamily);
+
+            // Create Info
+            VkSwapchainCreateInfoKHR createInfo = VkSwapchainCreateInfoKHR
+                    .calloc(stack)
+                    .sType(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)
+                    .surface(surfaceID)
+                    .minImageCount(imageCount)
+                    .imageFormat(swapChainFormat = surfaceFormat.format())
+                    .imageColorSpace(surfaceFormat.colorSpace())
+                    .imageExtent(swapChainExtent = details.chooseSwapChainExtent())
+                    .imageArrayLayers(1)
+                    .imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+                    .imageSharingMode(isExclusive ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT)
+                    .queueFamilyIndexCount(isExclusive ? 0 : 2)
+                    .pQueueFamilyIndices(isExclusive ? stack.ints() : stack.ints(indices.graphicsFamily, indices.presentFamily))
+                    .preTransform(details.capabilities.currentTransform())
+                    .compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+                    .presentMode(details.chooseSwapChainPresentMode())
+                    .clipped(true)
+                    .oldSwapchain(VK_NULL_HANDLE);
+
+            // Create SwapChain
+            LongBuffer handle = stack.callocLong(1);
+            int statusCode = vkCreateSwapchainKHR(logicalDevice, createInfo, null, handle);
+            if (statusCode != VK_SUCCESS)
+                throw new IllegalStateException("Failed to create Swap Chain: " + statusCode);
+            swapchainID = handle.get(0);
+
+            // Retrieve Handles
+            IntBuffer count = stack.callocInt(1);
+            vkGetSwapchainImagesKHR(logicalDevice, swapchainID, count, null);
+
+            LongBuffer images = stack.callocLong(count.get(0));
+            vkGetSwapchainImagesKHR(logicalDevice, swapchainID, count, images);
+
+            for (int i=0; i<count.get(0); i++)
+                swapChainImages.add(images.get(i));
+        }
+    }
+
+    private static SwapChainSupportDetails getSwapChainSupportDetails(VkPhysicalDevice device) {
+        SwapChainSupportDetails details = new SwapChainSupportDetails();
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            // Surface Capabilities
+            details.capabilities = VkSurfaceCapabilitiesKHR.create();
+            KHRSurface.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surfaceID, details.capabilities);
+
+            // Surface Formats
+            IntBuffer formatCount = stack.callocInt(1);
+            KHRSurface.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surfaceID, formatCount, null);
+            details.surfaceFormatsSize = formatCount.get(0);
+
+            if (details.surfaceFormatsSize != 0) {
+                details.surfaceFormats = VkSurfaceFormatKHR.create(details.surfaceFormatsSize);
+                KHRSurface.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surfaceID, formatCount, details.surfaceFormats);
+            }
+
+            // Presentation Modes
+            // int[] presentationCount = new int[1];
+            IntBuffer presentationCount = stack.callocInt(1);
+            KHRSurface.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surfaceID, presentationCount, null);
+
+            if (presentationCount.get(0) != 0) {
+                details.presentModes = new int[presentationCount.get(0)];
+                KHRSurface.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surfaceID, new int[1], details.presentModes);
+            }
+        }
+
+        return details;
+    }
+
+    private static void createImageViews() {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            for (long imageID: swapChainImages) {
+                VkImageViewCreateInfo createInfo = VkImageViewCreateInfo
+                        .create()
+                        .sType(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)
+                        .image(imageID)
+                        .viewType(VK_IMAGE_VIEW_TYPE_2D)
+                        .format(swapChainFormat)
+                        .components(VkComponentMapping.create().set(
+                                VK_COMPONENT_SWIZZLE_IDENTITY,
+                                VK_COMPONENT_SWIZZLE_IDENTITY,
+                                VK_COMPONENT_SWIZZLE_IDENTITY,
+                                VK_COMPONENT_SWIZZLE_IDENTITY))
+                        .subresourceRange(VkImageSubresourceRange.create().set(
+                                VK_IMAGE_ASPECT_COLOR_BIT,
+                                0,
+                                1,
+                                0,
+                                1
+                        ));
+
+                LongBuffer handle = stack.callocLong(1);
+                int statusCode = vkCreateImageView(logicalDevice, createInfo, null, handle);
+                if (statusCode != VK_SUCCESS)
+                    throw new IllegalStateException("Failed to create Image View: " + statusCode);
+                swapChainImageViews.add(handle.get(0));
+            }
+        }
     }
 
     private static boolean checkValidationLayerSupport() {
@@ -310,6 +471,9 @@ public final class VulkanManager {
         if (!initialized || Main.isRunning()) return;
         initialized = false;
 
+        for (Long imageViewID: swapChainImageViews)
+            vkDestroyImageView(logicalDevice, imageViewID, null);
+        vkDestroySwapchainKHR(logicalDevice, swapchainID, null);
         vkDestroyDevice(logicalDevice, null);
         KHRSurface.vkDestroySurfaceKHR(instance, surfaceID, null);
         vkDestroyInstance(instance, null);
@@ -327,6 +491,60 @@ public final class VulkanManager {
                     .distinct()
                     .filter(Objects::nonNull)
                     .toArray(Integer[]::new);
+        }
+    }
+
+    private static class SwapChainSupportDetails {
+        VkSurfaceCapabilitiesKHR capabilities;
+        VkSurfaceFormatKHR.Buffer surfaceFormats;
+        int surfaceFormatsSize = 0;
+        int[] presentModes;
+
+        public boolean isComplete() { return surfaceFormatsSize > 0 && presentModes.length > 0; }
+
+        public VkSurfaceFormatKHR chooseSwapChainSurfaceFormat() {
+            for (int i=0; i<surfaceFormatsSize; i++) {
+                VkSurfaceFormatKHR format = surfaceFormats.get(i);
+                if (format.format() == VK_FORMAT_B8G8R8A8_SRGB
+                        && format.colorSpace() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+                    return format;
+            }
+            return surfaceFormats.get(0);
+        }
+
+        public int chooseSwapChainPresentMode() {
+            int[] presentModePreferanceOrder = DataManager.getSettingList("present mode preferance").stream()
+                    .mapToInt(s -> switch (s) {
+                        case "IMMEDIATE" -> VK_PRESENT_MODE_IMMEDIATE_KHR;
+                        case "FIFO" -> VK_PRESENT_MODE_FIFO_KHR;
+                        case "FIFO_RELAXED" -> VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+                        case "MAILBOX" -> VK_PRESENT_MODE_MAILBOX_KHR;
+                        default -> -1;
+                    }).filter(i -> i >= 0)
+                    .toArray();
+
+            for (int preferance: presentModePreferanceOrder) for (int mode: presentModes)
+                if (mode == preferance) return mode;
+
+            return VK_PRESENT_MODE_FIFO_KHR;
+        }
+
+        public VkExtent2D chooseSwapChainExtent() {
+            if (capabilities.currentExtent().width() != Integer.MAX_VALUE)
+                return capabilities.currentExtent();
+
+            int width, height;
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                IntBuffer widthHandle = stack.callocInt(1);
+                IntBuffer heightHandle = stack.callocInt(1);
+                glfwGetFramebufferSize(Window.getId(), widthHandle, heightHandle);
+                width = widthHandle.get(0);
+                height = heightHandle.get(0);
+            }
+
+            return VkExtent2D.create()
+                    .width( (int) Logic.clamp(width,  capabilities.minImageExtent().width(),  capabilities.maxImageExtent().width()))
+                    .height((int) Logic.clamp(height, capabilities.minImageExtent().height(), capabilities.maxImageExtent().height()));
         }
     }
 }

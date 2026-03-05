@@ -23,6 +23,15 @@ enable_validation_layers: true                                                  
 extension layers : VK_EXT_debug_utils
 enable_extension_layers : true                                                                   // TODO: false on build
 
+device properties: VK_KHR_swapchain
+
+    // available values: IMMEDIATE, FIFO, FIFO_RELAXED, MAILBOX
+    // default is FIFO
+    // for android applications, FIFO is more energy efficient
+present mode preferance: MAILBOX, FIFO_RELAXED, FIFO, IMMEDIATE
+
+additional_swap_chain_images: 1
+
 // Info ----------------------------------------------------------------------------------------------------------------
 show_everything: false                                                                           // TODO: true  on build
 
@@ -44,6 +53,7 @@ show_metrics_on_window_title    : true
 show_instance_extensions        : false
 show_instance_layers            : false
 show_devices                    : false
+show_device_properties          : false
 
 // ---------------------------------------------------------------------------------------------------------------------
 
